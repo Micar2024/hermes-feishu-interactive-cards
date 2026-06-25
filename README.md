@@ -64,48 +64,42 @@ Hermes Gateway
 3. **Card Rendering**: `CardIR` → platform-specific card schema (Feishu 2.0 interactive card)
 4. **Card Dispatch**: `feishu_sender.py` calls `lark-oapi` SDK directly (no monkey-patch, no gateway modification)
 
-## Status: v0.3 (Visible Feedback + Clickable Buttons)
+## Status: v0.4.0 (Withdrawal Buttons + Cross-Turn Dedup + Edit-Bug Fix)
 
-✅ Core state machine working
-✅ Event schema defined
-✅ Card IR renderable
-✅ Feishu 2.0 adapter producing valid cards (flat schema: `header` + `elements` + `footer` at top level)
-✅ Plugin discovery & hook registration verified
-✅ Card sent on `pre_gateway_dispatch` via `lark-oapi` `message.create`
-✅ Card edited on subsequent events via `lark-oapi` `message.patch` (NOT `message.update` — that endpoint rejects `interactive` msg_type with `code 230001`)
-✅ **Real end-to-end test passing** (see Verification below)
-✅ **Header now reflects state in real time** (`done · title`, color flips on transition)
-✅ **Status row + state timeline + edit counter in footer**
-✅ **Answer text actually renders** (v0.2 silently dropped it — fixed)
-✅ **Card action buttons work** — user can click Approve/Reject, the plugin receives the click via lark WebSocket, IR transitions to `done`, card re-renders with click recorded. v0.3 #4.
+✅ v0.1 Core state machine + Feishu 2.0 adapter (flat schema)
+✅ v0.2 Card sent on `pre_gateway_dispatch` + edited on subsequent events via `message.patch`
+✅ v0.3 Visible feedback (header state, status row, state timeline, edit counter)
+✅ v0.3 #4 Clickable buttons — Approve/Reject wired through lark WebSocket
+✅ v0.4 Cross-turn deduplication — same chat within 60s TTL edits the existing card (`🔄 续接上一张卡片` hint), instead of creating a new one
+✅ v0.4 #3 **Card withdrawal button** — `撤回卡片` (type=danger) on every card, every state. Click → `DELETE /open-apis/im/v1/messages/:id` → pipeline marked `withdrawn` → next turn creates fresh card. Closes the loop on user error.
+✅ **Real end-to-end verified** (see Verification):
+- `om_x100b6ce0d99c08a8b49affc012b1c82` — card sent + withdrawn (real Feishu delete API, `success=True, result='ok'`)
+- `om_x100b6ce05cfd4ca0b3bf4995f23690c` — card sent, turn-2 edited same message_key (dedup path)
 
 ⏳ **Not yet implemented** (see `ROADMAP.md`):
-- **Streaming delta updates** — no `stream_delta` hook in Hermes yet.
-  Cards update at `transform_llm_output` time (after LLM finishes),
-  not per-token. This is a Hermes upstream change, not a plugin one.
-- **Card → final-answer deduplication** — Hermes still sends the
-  final answer as a separate text message. Until `post_llm_call`
-  supports response replacement, the user sees both.
-- **Error recovery** — failed `message.patch` is logged and dropped.
-- **Multi-platform** — only the Feishu adapter exists. The IR is
-  platform-agnostic, so adapters for Telegram/Discord/Slack are
-  pure add-ons, but they don't exist yet.
-- **HMAC signature verification on button callbacks** — the v0.3 #4
-  listener receives events via lark-oapi's built-in dispatcher (which
-  does verification when `encrypt_key`/`verification_token` are
-  configured). Production deployments should set those in
-  `config.yaml`; v0.3 leaves them empty (no signature = anyone can
-  inject clicks, but only clicks matching a real pipeline have any
-  effect).
+- **Streaming delta updates** — no `stream_delta` hook in Hermes yet. Cards update at `transform_llm_output` time, not per-token. Hermes upstream change.
+- **Card → final-answer deduplication** — Hermes still sends the final answer as a separate text message. Until `post_llm_call` supports response replacement, the user sees both.
+- **HMAC signature verification on button callbacks** — v0.3 #4 listener relies on lark-oapi's built-in dispatcher. Production deployments should set `encrypt_key` / `verification_token` in `config.yaml`.
+- **Multi-platform adapters** (v0.5+ deferred) — only Feishu adapter exists. The IR is platform-agnostic; Telegram/Discord/Slack adapters are pure add-ons, but they don't exist yet. See `ROADMAP.md` for why this is deferred until v0.5.
 
-## Usage
+## Usage: How to Test the Withdrawal Button Manually
 
-Enable in `~/.hermes/config.yaml`:
-```yaml
-plugins:
-  enabled:
-    - feishu-interactive-cards
-```
+After enabling the plugin and sending any message to your Feishu bot, the card will arrive with a red `撤回卡片` button at the bottom. To test the full withdrawal flow:
+
+1. Open Feishu, find the card in the chat
+2. Click the red `撤回卡片` button
+3. Within ~1s, the card should disappear from your chat
+4. In the plugin logs (`~/.hermes/logs/hermes.log` or wherever Hermes pipes stdout), you should see:
+   ```
+   [plugin.feishu-interactive-cards] card withdrawn: message_id=om_xxx
+   [plugin.feishu-interactive-cards] delete_card success: (True, "ok")
+   ```
+5. Send a new message to the bot — a fresh card should appear (the previous pipeline is gone, marked `status="withdrawn"`).
+
+If the card doesn't disappear, check `~/.hermes/config.yaml`:
+- `plugins.enabled` contains `feishu-interactive-cards`
+- `feishu.app_id` and `feishu.app_secret` are set
+- The WebSocket listener is running (lark-oapi dispatches `P2CardActionTrigger` events; if the gateway's listener is dead, clicks won't arrive)
 
 ## Future: Add `stream_delta` Hook (Hermes Upstream)
 

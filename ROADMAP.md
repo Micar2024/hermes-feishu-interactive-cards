@@ -30,23 +30,44 @@ What's still missing for "the user actually sees the value":
 - ❌ Still no `message.patch` failure recovery (L4)
 - ❌ Still single-platform (L5)
 
-## v0.4 — "Stream into the card + dedup"
+## v0.4 — "Stream into the card + dedup" (SHIPPED as v0.4.0)
 
-**This version is blocked on upstream.** See **Upstream Dependencies**
-below.
+**Status (2026-06-25): v0.4.0 shipped, commit `60656af` on
+`main` of `Micar2024/hermes-feishu-interactive-cards`.**
 
-If the `stream_delta` hook lands in Hermes main, v0.4 is a
+What's in v0.4.0:
+- **v0.4 #1 Cross-turn dedup** — same chat within 60s TTL edits the
+  existing card instead of creating a new one. Real Feishu verified
+  (`om_x100b6ce05cfd4ca0b3bf4995f23690c` send + edit same message_key).
+- **v0.4 #2 Cancel-on-state-change** — pipeline marked `withdrawn`
+  when user explicitly retracts. First shipped in v0.4.0 because
+  v0.4 #3 (the button) needed it.
+- **v0.4 #3 Card withdrawal button** — `撤回卡片` (type=danger)
+  on every card. Click → `DELETE /open-apis/im/v1/messages/:id`
+  → pipeline marked `withdrawn` → next turn creates fresh card.
+  Closes the loop on user error.
+- **Bug fix**: `edit_card` was using `asyncio.to_thread` despite
+  v0.3 docs claiming `await client.patch(...)`. The SDK methods
+  are SYNC, so `asyncio.to_thread` is correct — but the misleading
+  doc/comment was cleaned up.
+
+**Stream-into-card is still blocked on upstream** (`stream_delta`
+hook missing). The dedup half of v0.4 shipped because it doesn't
+need the upstream hook — it just listens for `pre_gateway_dispatch`
+on subsequent turns and edits the existing card.
+
+If `stream_delta` lands in Hermes main, the streaming half becomes a
 plugin-only change: subscribe to `stream_delta` events, accumulate
 text, throttle patches (e.g. max 4 patches/sec to respect Feishu's
 ~5 QPS write limit), and `message.patch` the card.
 
 If `post_llm_call` learns to return a replacement string (Upstream #2),
-v0.4 also dedups the final answer: instead of Hermes sending "the final
+v0.4.x also dedups the final answer: instead of Hermes sending "the final
 text" as a separate message, the plugin returns the text from
 `post_llm_call` and the gateway swallows the original — the card
 becomes the only visible artifact.
 
-If neither lands by Q3 2026, **abandon v0.4 in favor of**:
+If neither lands by Q3 2026, **abandon streaming into the card in favor of**:
 - A "polling" fallback: hook `transform_llm_output` to read the
   most recent `_stream_consumer._text_buffer` (private API, will
   break across versions)
@@ -56,10 +77,26 @@ If neither lands by Q3 2026, **abandon v0.4 in favor of**:
 
 **Both fallbacks are bad. The right answer is the upstream hook.**
 
-## v0.5 — "Multi-platform adapters + production polish"
+## v0.5 — "Multi-platform adapters + production polish" (DEFERRED)
 
-Once v0.3 + v0.4 are solid on Feishu, the IR/render code is platform-
-agnostic. v0.5 is mostly boilerplate:
+**Status (2026-06-25): Deferred to v0.5+ until v0.4 settles.**
+
+Why deferred:
+- **v0.4 #3 (withdrawal button) shipped first** — closes the loop on
+  user error (撤回卡片). Real Feishu verified
+  (`om_x100b6ce0d99c08a8b49affc012b1c82` send + delete success).
+  Lays the groundwork for v0.5's HMAC error-path cleanup.
+- **stream_delta hook still missing** — per-token card updates
+  blocked on Hermes upstream.
+- **Cross-session persistence hits AGENTS.md** — plugin can't touch
+  core files, so cross-session message_key reuse is a Hermes
+  refactor, not a plugin change.
+- **Multi-platform adds maintenance surface area** — deferring until
+  Feishu is stable in production for at least 2 weeks prevents
+  building adapters for an IR that might still churn.
+
+Once v0.4 settles in production (~2 weeks of real usage), v0.5
+revisits:
 
 - `adapter_telegram.py` — Telegram InlineKeyboard buttons +
   `editMessageText` (already supports in-place edit; better than
