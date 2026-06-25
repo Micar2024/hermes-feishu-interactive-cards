@@ -8,13 +8,65 @@ on fixes. Dates in `YYYY-MM-DD`.
 
 ## [0.4.0] — 2026-06-25
 
-Cross-turn card deduplication. The plugin now reuses the most recent
-card in a chat within a 60s TTL instead of sending a new one for every
-turn, so a fast-follow-up message in the same Feishu conversation
-edits the existing card (with a `🔄 续接上一张卡片` hint at the top)
-rather than creating a new card. Real Feishu verification: 1 new card
-sent on turn 1 (`om_x100b6ce05cfd4ca0b3bf4995f23690c`), turn 2 edited
-the same message_key, `edit_count` went 0→1.
+### Card withdrawal — "撤回卡片" button (v0.4 #3)
+
+A persistent **danger** button now appears at the bottom of every
+card, in every state. Clicking it deletes the card via Lark's
+`DELETE /open-apis/im/v1/messages/:message_id` endpoint, marks the
+pipeline `status='withdrawn'`, and lets the next turn in the same
+chat create a fresh card. Real Feishu verification: card sent
+(`om_x100b6ce0c240dca4b114b32d33c0ba7`) → delete returns
+`success=True, result='ok'`.
+
+#### Added
+- `feishu_sender.FeishuCardClient.delete_card(message_id)` — wraps
+  `DeleteMessageRequest` + `client.im.v1.message.delete(request)`.
+  Uses the same `asyncio.to_thread(client.method, request)` pattern
+  as `send_card` / `edit_card` to avoid blocking the event loop.
+- `plugin._delete_card_async(pipeline, chat_id, platform)` —
+  fire-and-forget coroutine for the button handler. Soft-fails on
+  24h-expired cards (Lark error code 230020) instead of crashing
+  the listener.
+- `plugin._on_card_button_clicked` routes `button_key == "card_withdraw"`
+  to `_delete_card_async` and sets `pipeline.ir.status = "withdrawn"`.
+- `adapter_feishu._build_body_elements` always appends a
+  `撤回卡片` button (type=danger, value.action=card_withdraw) at
+  the end of every card.
+- `plugin._get_recent_pipeline_for_chat` now treats `withdrawn` like
+  `done` / `error` for TTL purposes — a withdrawn pipeline is
+  evicted after `_CARD_TTL_SECONDS` so a follow-up turn starts fresh.
+- `tests/test_withdraw.py` — 4 new unit tests:
+  1. Withdraw button payload triggers `_delete_card_async` and sets
+     `status='withdrawn'`.
+  2. `撤回卡片` button is rendered on every card (verified in the
+     rendered JSON, not just the IR).
+  3. Withdrawn pipeline is evicted by the TTL check.
+  4. Withdrawn state participates in the v0.4 dedup lifecycle.
+- `tests/test_e2e_delete.py` — real Feishu end-to-end test:
+  send → delete → confirm. Runs in ~5s, asserts `delete_card`
+  returns `(True, "ok")`.
+
+#### Changed
+- `feishu_sender.edit_card` no longer calls
+  `await client.im.v1.message.patch(...)` — the SDK's
+  `client.im.v1.message.<verb>(request)` methods are SYNC
+  (verified via `inspect.iscoroutinefunction` returning `False`).
+  Awaiting a sync call would have raised
+  `TypeError: object PatchMessageResponse can't be used in 'await' expression`
+  on the next runtime. v0.3's e2e test only happened to "pass" by
+  using `asyncio.to_thread`, which converts sync→thread→awaitable.
+  v0.4 normalizes all three (send / edit / delete) to the
+  `asyncio.to_thread(client.method, request)` pattern.
+
+### Cross-turn card deduplication (v0.4)
+
+The plugin now reuses the most recent card in a chat within a 60s
+TTL instead of sending a new one for every turn, so a fast-follow-up
+message in the same Feishu conversation edits the existing card
+(with a `🔄 续接上一张卡片` hint at the top) rather than creating
+a new card. Real Feishu verification: 1 new card sent on turn 1
+(`om_x100b6ce05cfd4ca0b3bf4995f23690c`), turn 2 edited the same
+message_key, `edit_count` went 0→1.
 
 ### Added
 - `plugin._get_recent_pipeline_for_chat(chat_id, platform)` — looks

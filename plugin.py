@@ -92,6 +92,11 @@ def _on_card_button_clicked(payload: Dict[str, Any]) -> None:
     v0.3 #4 — "A path": record the click on the IR (the user sees
     feedback when the card re-renders). Does NOT auto-continue the
     LLM conversation — that's the v0.4 "B path" task.
+
+    v0.4 #3 — "撤回" button (button_key == "card_withdraw") deletes
+    the card via Lark's DELETE /im/v1/messages/:message_id API and
+    marks the pipeline as withdrawn. User intent: "I sent the wrong
+    prompt / this card is misleading — get rid of it."
     """
     try:
         from .session import EventType
@@ -123,6 +128,22 @@ def _on_card_button_clicked(payload: Dict[str, Any]) -> None:
             "[feishu-interactive-cards] Button click recorded: chat=%s key=%s",
             open_chat_id, button_key,
         )
+
+        # v0.4 #3: "撤回" button → delete the card and mark pipeline withdrawn.
+        # We do NOT push another edit (the card is gone). Pipeline stays in
+        # _pipelines so a follow-up turn can either reuse a new card or start
+        # fresh; the WITHDRAWN flag is informational only.
+        if button_key == "card_withdraw":
+            if pipeline.ir.message_key and pipeline.platform == "feishu":
+                _delete_card_async(
+                    pipeline,
+                    open_chat_id,
+                    "feishu",
+                )
+                # Mark withdrawn so a follow-up turn in the same chat creates
+                # a new card instead of dedup-reusing a deleted one.
+                pipeline.ir.status = "withdrawn"
+            return
 
         ev = build_event(
             EventType.INTERACTION_COMPLETED,
@@ -191,7 +212,7 @@ def _get_recent_pipeline_for_chat(chat_id: str, platform: str = ""):
         return None
     if not p.ir.message_key:
         return None
-    if p.ir.status in ("done", "error"):
+    if p.ir.status in ("done", "error", "withdrawn"):
         import time as _t
         if (_t.time() - (p.ir.updated_at or 0)) > _CARD_TTL_SECONDS:
             # Evict stale pipeline so the next turn creates a fresh one
@@ -589,5 +610,46 @@ def _edit_card_async(pipeline, chat_id: str, platform: str, final: bool = False)
                     pipeline.ir.edit_count += 1
         except Exception as exc:
             logger.debug("[feishu-interactive-cards] Edit exception: %s", exc)
+
+    _schedule_card_send(_do())
+
+
+def _delete_card_async(pipeline, chat_id: str, platform: str):
+    """Asynchronously delete the card (v0.4 #3 — user "撤回" intent).
+
+    No-op if message_key is missing. After deletion, the pipeline is
+    marked `withdrawn` so a follow-up turn in the same chat creates a
+    new card (v0.4 dedup logic checks `status in (done, error,
+    withdrawn)` to decide whether to reuse the old card).
+    """
+    from .feishu_sender import get_feishu_client
+
+    client = get_feishu_client()
+    if client is None:
+        return
+
+    msg_key = pipeline.ir.message_key
+    if not msg_key:
+        logger.debug(
+            "[feishu-interactive-cards] _delete_card_async: no message_key, skipping"
+        )
+        return
+
+    async def _do():
+        try:
+            success, result = await client.delete_card(msg_key)
+            if success:
+                logger.info(
+                    "[feishu-interactive-cards] Card withdrawn by user: %s", msg_key,
+                )
+            else:
+                # Common case: card already > 24h old → Feishu code 230020.
+                # Treat as soft failure, don't crash the listener.
+                logger.debug(
+                    "[feishu-interactive-cards] Delete failed (likely too old): %s",
+                    result,
+                )
+        except Exception as exc:
+            logger.debug("[feishu-interactive-cards] Delete exception: %s", exc)
 
     _schedule_card_send(_do())

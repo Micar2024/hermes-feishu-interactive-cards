@@ -122,7 +122,8 @@ class FeishuCardClient:
         "更新消息卡片" API (PATCH /open-apis/im/v1/messages/{message_id}).
 
         Note: `message.update()` only accepts text/post msg_types and will
-        reject interactive cards with code 230001. We need `message.patch()`.
+        reject `interactive` cards. Always use `Message.patch()` for
+        editing sent cards.
 
         API ref: https://open.feishu.cn/document/server-docs/im-v1/message-card/patch
         """
@@ -141,10 +142,12 @@ class FeishuCardClient:
                 .message_id(message_id) \
                 .request_body(body) \
                 .build()
-
-            client = self._get_client()
+            # NOTE: lark-oapi SDK methods are SYNC (verified via
+            # `inspect.iscoroutinefunction`). Wrap with `asyncio.to_thread`
+            # so we don't block the event loop when the lark SDK makes
+            # its blocking HTTP call. This matches `send_card`'s pattern.
             response = await asyncio.to_thread(
-                client.im.v1.message.patch, request
+                self._get_client().im.v1.message.patch, request
             )
 
             if response.success():
@@ -161,6 +164,57 @@ class FeishuCardClient:
 
         except Exception as exc:
             logger.exception("[feishu-interactive-cards] Edit exception: %s", exc)
+            return False, str(exc)
+
+    async def delete_card(self, message_id: str) -> Tuple[bool, str]:
+        """Permanently delete a message via the SDK's `Message.delete()` method.
+
+        Wraps the "撤回消息" API (DELETE /open-apis/im/v1/messages/{message_id}).
+        Uses TENANT access token (no user context needed for self-sent messages).
+
+        Bot-sent messages can be recalled within 24h of being sent. After
+        24h the API returns code 230020 ("message can't be recalled after
+        24 hours") and we treat that as a non-fatal soft failure.
+
+        Note: lark-oapi SDK's message namespace methods are SYNC
+        (verified via `inspect.iscoroutinefunction`). Wrap with
+        `asyncio.to_thread` to avoid blocking the event loop. Same
+        applies to `patch`/`create`/`update`/`get`.
+
+        Returns:
+            (success, "ok" or error_string)
+        """
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageRequest
+        except ImportError as exc:
+            logger.error("[feishu-interactive-cards] SDK import error: %s", exc)
+            return False, f"SDK import error: {exc}"
+
+        try:
+            request = DeleteMessageRequest.builder() \
+                .message_id(message_id) \
+                .build()
+            # NOTE: lark-oapi SDK methods are SYNC. Wrap with
+            # `asyncio.to_thread` to avoid blocking the event loop.
+            # This matches `send_card` and `edit_card` patterns.
+            response = await asyncio.to_thread(
+                self._get_client().im.v1.message.delete, request
+            )
+
+            if response.success():
+                logger.info("[feishu-interactive-cards] Card deleted: %s", message_id)
+                return True, "ok"
+            else:
+                err_code = getattr(response, "code", -1)
+                err_msg = getattr(response, "msg", "unknown")
+                logger.error(
+                    "[feishu-interactive-cards] Delete failed: code=%s msg=%s",
+                    err_code, err_msg,
+                )
+                return False, f"{err_code}: {err_msg}"
+
+        except Exception as exc:
+            logger.exception("[feishu-interactive-cards] Delete exception: %s", exc)
             return False, str(exc)
 
 

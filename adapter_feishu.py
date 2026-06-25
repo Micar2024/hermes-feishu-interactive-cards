@@ -143,6 +143,29 @@ def _build_body_elements(ir: CardIR) -> List[Dict[str, Any]]:
             "actions": _render_buttons(ir.interaction_buttons),
         })
 
+    # v0.4 #3: persistent "撤回" button — user-facing affordance for
+    # withdrawing a card. Available in every state (idle / thinking /
+    # done / error) so the user can always clean up a misfire. The
+    # plugin's _on_card_button_clicked handles `card_withdraw` by
+    # calling _delete_card_async (Lark SDK delete) and marking the
+    # pipeline status='withdrawn' so the next turn sends a fresh card.
+    elements.append({
+        "tag": "action",
+        "actions": [{
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "撤回卡片"},
+            "type": "danger",
+            "value": {
+                "action": "card_withdraw",
+                # Also store the current message_key as a fallback so
+                # the callback handler can locate the card even if the
+                # chat_id index is stale. The primary key in the plugin
+                # is the chat_id reverse index.
+                "message_key": ir.message_key or "",
+            },
+        }],
+    })
+
     return elements
 
 
