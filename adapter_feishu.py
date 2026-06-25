@@ -107,6 +107,19 @@ def _build_body_elements(ir: CardIR) -> List[Dict[str, Any]]:
             }],
         })
 
+    # v0.4: dedup followup hint. Set by plugin.py when the same chat sent
+    # a new turn while the previous card was still 'live'. Adapter reads
+    # it once and clears the flag so it only shows on the first edit.
+    if getattr(ir, "_dedup_followup", False):
+        elements.append({
+            "tag": "note",
+            "elements": [{
+                "tag": "plain_text",
+                "content": "🔄 续接上一张卡片 · 新一轮任务开始",
+            }],
+        })
+        setattr(ir, "_dedup_followup", False)
+
     # Status indicator — v0.3: always visible (was: hidden for idle/done/error)
     status_elem = _render_status(ir)
     if status_elem:

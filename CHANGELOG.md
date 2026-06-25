@@ -6,6 +6,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/) style. Versions
 follow Hermes' plugin versioning — bump minor on new features, patch
 on fixes. Dates in `YYYY-MM-DD`.
 
+## [0.4.0] — 2026-06-25
+
+Cross-turn card deduplication. The plugin now reuses the most recent
+card in a chat within a 60s TTL instead of sending a new one for every
+turn, so a fast-follow-up message in the same Feishu conversation
+edits the existing card (with a `🔄 续接上一张卡片` hint at the top)
+rather than creating a new card. Real Feishu verification: 1 new card
+sent on turn 1 (`om_x100b6ce05cfd4ca0b3bf4995f23690c`), turn 2 edited
+the same message_key, `edit_count` went 0→1.
+
+### Added
+- `plugin._get_recent_pipeline_for_chat(chat_id, platform)` — looks
+  up the most recent pipeline for a chat; returns `None` if it's
+  expired (60s TTL), never had a `message_key`, or platform differs.
+- `plugin._CARD_TTL_SECONDS = 60` — configurable TTL window.
+- `plugin._pipelines_by_chat: Dict[str, CardPipeline]` — secondary
+  index keyed by `chat_id` (the primary key is still `session_id:platform`).
+- `tests/test_dedup.py` — 5 unit tests covering: first turn creates
+  pipeline, within-TTL reuses pipeline + same message_key, past-TTL
+  evicts and creates new, multi-chat isolation, adapter renders
+  `🔄` hint and consumes the flag.
+
+### Changed
+- `plugin._on_pre_gateway_dispatch` — new dedup branch runs before
+  the existing SESSION_START path. When a reusable pipeline is found,
+  it skips `pipeline.process_event(SESSION_START)` (which would reset
+  `message_key`/`edit_count`/`state_history`) and instead mutates
+  just `ir.title` + `ir.status` + `ir._dedup_followup`, then calls
+  `_edit_card_async`.
+- `adapter_feishu._build_body_elements` — when `ir._dedup_followup` is
+  set, prepends a `🔄 续接上一张卡片` note; the flag is `del`'d after
+  render so subsequent edits of the same card don't keep showing it.
+- `plugin._get_recent_pipeline_for_chat` evicts stale pipelines from
+  BOTH `_pipelines_by_chat` and `_pipelines` on TTL expiry (otherwise
+  the second call to `_get_or_create_pipeline` would resurrect the
+  same object via the session-key index).
+
+### Tests
+- `pytest tests/test_dedup.py` — 5/5 passing
+- `pytest tests/` — 10/10 passing (5 dedup + 5 callback)
+- `pytest tests/test_e2e_dedup.py` — real Feishu: turn 1 sends,
+  turn 2 edits same message_key, title updated, `edit_count` 0→1.
+
 ## [Unreleased] — v0.3.1 (next)
 
 Bumps the patch number for v0.3. No new features yet planned for this

@@ -147,7 +147,12 @@ def _on_card_button_clicked(payload: Dict[str, Any]) -> None:
 
 
 def _get_or_create_pipeline(session_id: str, platform: str = "") -> "CardPipeline":
-    """Get or create a CardPipeline for this session."""
+    """Get or create a CardPipeline for this session.
+
+    v0.4: pipelines are also indexed by chat_id (not just session_id) so
+    that consecutive turns in the same Feishu chat can be deduplicated
+    against the most recent active card.
+    """
     from .session import CardPipeline
 
     key = f"{session_id}:{platform}"
@@ -156,10 +161,61 @@ def _get_or_create_pipeline(session_id: str, platform: str = "") -> "CardPipelin
     return _pipelines[key]
 
 
+# v0.4: chat_id -> pipeline reverse index for cross-turn deduplication.
+# Populated in _on_pre_gateway_dispatch after a pipeline gets a message_key.
+_pipelines_by_chat: Dict[str, "CardPipeline"] = {}
+
+
+# v0.4: card TTL — if a pipeline finished more than this many seconds ago,
+# treat the next incoming message as a fresh turn and send a new card.
+_CARD_TTL_SECONDS = 60
+
+
+def _get_recent_pipeline_for_chat(chat_id: str, platform: str = ""):
+    """Return the most recent pipeline for this chat if its card is still 'live'.
+
+    'Live' means:
+      - the pipeline has a message_key (we've sent at least one card), AND
+      - the pipeline is not currently in 'done' / 'error' state, OR it
+        finished within `_CARD_TTL_SECONDS` (user is likely continuing the
+        same conversation).
+
+    If the pipeline is past TTL, this also evicts it from the
+    `_pipelines_by_chat` index so a new pipeline will be created for
+    the next turn.
+    """
+    p = _pipelines_by_chat.get(chat_id)
+    if p is None:
+        return None
+    if p.platform != platform:
+        return None
+    if not p.ir.message_key:
+        return None
+    if p.ir.status in ("done", "error"):
+        import time as _t
+        if (_t.time() - (p.ir.updated_at or 0)) > _CARD_TTL_SECONDS:
+            # Evict stale pipeline so the next turn creates a fresh one
+            _pipelines_by_chat.pop(chat_id, None)
+            _pipelines.pop(f"{p.session_id}:{p.platform}", None)
+            return None
+    return p
+
+
+def _index_pipeline_by_chat(pipeline: "CardPipeline", chat_id: str):
+    """Record the chat_id -> pipeline reverse index once we know chat_id."""
+    if chat_id and chat_id not in _pipelines_by_chat:
+        _pipelines_by_chat[chat_id] = pipeline
+
+
 def _cleanup_pipeline(session_id: str, platform: str = ""):
-    """Remove pipeline after session ends."""
+    """Remove pipeline after session ends. v0.4: also drop chat_id index."""
     key = f"{session_id}:{platform}"
-    _pipelines.pop(key, None)
+    p = _pipelines.pop(key, None)
+    if p is not None:
+        # drop chat index only if it still points to this pipeline
+        for chat_id, indexed in list(_pipelines_by_chat.items()):
+            if indexed is p:
+                _pipelines_by_chat.pop(chat_id, None)
 
 
 def _extract_source_info(event_obj) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -226,7 +282,30 @@ def _on_pre_gateway_dispatch(event=None, **kwargs):
 
     user_text = getattr(event, "text", "") if event else ""
 
+    # v0.4: try to reuse the most recent card in this chat (cross-turn dedup).
+    existing = _get_recent_pipeline_for_chat(chat_id, platform)
+    if existing is not None:
+        # Reuse the existing pipeline + message_key. Don't go through
+        # SESSION_START (which would reset message_key, tool_states, and
+        # edit_count in session.py:_on_session_start). Just push the new
+        # turn's title into the IR and flag the adapter to render a
+        # "followup" hint on the next render.
+        pipeline = existing
+        pipeline.turn_id = kwargs.get("turn_id", "") or ""
+        from .session import EventType as _ET
+        from .events import build_event as _be
+        pipeline.ir.title = (user_text or "")[:80] or "新对话"
+        pipeline.ir.status = "idle"
+        pipeline.ir.status_detail = ""
+        # tell the adapter to render the 🔄 hint once
+        setattr(pipeline.ir, "_dedup_followup", True)
+        # pipeline.process_event is intentionally NOT called here — we
+        # want to preserve message_key, edit_count, state_history.
+        _edit_card_async(pipeline, chat_id=chat_id, platform=platform)
+        return None
+
     pipeline = _get_or_create_pipeline(session_id, platform)
+    _index_pipeline_by_chat(pipeline, chat_id)
     ev = build_event(EventType.SESSION_START,
                      session_id=session_id,
                      platform=platform,
