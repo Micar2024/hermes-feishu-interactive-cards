@@ -1,0 +1,17 @@
+name: feishu-interactive-cards
+version: "0.1.0"
+description: "Platform-agnostic interactive card rendering for Hermes conversations. Hooks into the official plugin system — no monkey-patching."
+source: user
+kind: standalone
+author: 火灵儿
+license: MIT
+hooks:
+  - pre_gateway_dispatch
+  - post_tool_call
+  - transform_llm_output
+  - post_llm_call
+  - on_session_start
+  - on_session_end
+  - pre_approval_request
+  - post_approval_response
+register: feishu_interactive_cards.plugin.register
