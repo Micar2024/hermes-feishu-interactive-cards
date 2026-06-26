@@ -110,7 +110,7 @@ revisits:
   adapter can only send fresh messages, no live cards)
 
 Plus production polish (carried from v0.3):
-- L1: per-message opt-out flag (`feishu_interactive_cards.enabled`)
+- L1: per-message opt-out flag (`feishu_interactive_cards.enabled`) ✅ **shipped in v0.5 #1**
 - L4: `message.patch` failure → fresh `message.create` with snapshot
 - HMAC signature verification on button callbacks (production
   security; v0.3 shipped without it — fine for personal use)
@@ -120,16 +120,16 @@ Plus production polish (carried from v0.3):
 These are **documented, not fixed**. They will surface as user-visible
 issues if you enable the plugin in production.
 
-### L1. Plugin auto-activates in production ⚠️
+### L1. Plugin auto-activates in production ⚠️ ✅ **fixed in v0.5 #1**
 
 `~/.hermes/config.yaml:631` lists `feishu-interactive-cards` under
 `plugins:`, which means **every Feishu message** is intercepted from
-the moment the gateway starts. There is no per-message opt-in. If you
-want to disable without removing the plugin files, comment that line
-out.
+the moment the gateway starts. There is no per-message opt-in.
 
-**Fix planned for v0.3**: read `FEISHU_INTERACTIVE_CARDS_ENABLED` env
-var or a `feishu_interactive_cards.enabled` config flag.
+**Fix shipped (v0.5 #1)**: set `feishu_interactive_cards.enabled:
+false` in `~/.hermes/config.yaml` to make the plugin a no-op on all
+send/edit/delete paths and skip WebSocket listener startup. Defaults
+to `true` for backward compatibility. See `CHANGELOG.md` for details.
 
 ### L2. Streaming not supported (documented elsewhere)
 

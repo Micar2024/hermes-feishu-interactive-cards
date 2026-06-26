@@ -6,6 +6,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/) style. Versions
 follow Hermes' plugin versioning — bump minor on new features, patch
 on fixes. Dates in `YYYY-MM-DD`.
 
+## [0.5.0] — 2026-06-26
+
+### v0.5 #1 — per-message opt-out flag
+
+Closes ROADMAP L1. Set `feishu_interactive_cards.enabled: false` in
+`~/.hermes/config.yaml` to make the plugin a no-op across every
+send / edit / delete path and skip the WebSocket listener startup.
+Default remains `true` so existing users see no behavior change.
+
+#### Added
+- `plugin._is_enabled()` — reads `feishu_interactive_cards.enabled`
+  from `~/.hermes/config.yaml`. Defaults to `True` when absent or
+  unreadable (fail-open: a config parse failure must not silently
+  kill the plugin).
+- Guard in `_on_pre_gateway_dispatch` (send path) — short-circuits
+  before any pipeline is created or any network call is scheduled.
+- Guard in `_on_card_button_clicked` (button callback) — ignores
+  clicks on pre-existing cards sent before the flag was toggled.
+- Guard in `_edit_card_async` and `_delete_card_async` — single
+  config flag silences the whole card pipeline, including internal
+  calls from other handler sites.
+- Guard in `_start_card_action_listener` — skips WebSocket
+  connection when disabled, so Feishu sees no listener activity.
+- `tests/test_optout.py` — 13 unit tests covering: default-on
+  semantics, missing/empty config nodes, fail-open on parse error,
+  and per-entry-point guard verification.
+
+#### Not changed
+- The `feishu.message_card.enabled` flag in `config.yaml` is a
+  different/legacy switch and is NOT consulted by this plugin. A
+  comment in `_is_enabled` documents this to avoid future
+  confusion.
+- The `plugins.enabled` list still controls framework-level
+  registration; `feishu_interactive_cards.enabled` only flips
+  runtime behavior once the plugin is loaded.
+
 ## [0.4.0] — 2026-06-25
 
 ### Card withdrawal — "撤回卡片" button (v0.4 #3)

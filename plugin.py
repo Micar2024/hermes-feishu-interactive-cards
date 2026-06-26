@@ -23,6 +23,43 @@ logger = logging.getLogger(__name__)
 _pipelines: Dict[str, "CardPipeline"] = {}
 
 
+# v0.5 #1: per-message opt-out flag. Default ON (preserves v0.4 behavior
+# for existing users). Disable by setting in ~/.hermes/config.yaml:
+#
+#   feishu_interactive_cards:
+#     enabled: false
+#
+# When disabled, the plugin short-circuits all send/edit/delete paths
+# AND skips the WebSocket listener startup, so Feishu sees no
+# activity from this bot's card pipeline. Buttons on any pre-existing
+# cards (sent before disabling) are no-ops.
+#
+# NOTE: the `feishu.message_card.enabled` flag in config.yaml is a
+# different/legacy switch and is NOT consulted by this plugin.
+def _is_enabled() -> bool:
+    """Read `feishu_interactive_cards.enabled` from config.yaml.
+
+    Returns True if absent (default), False if explicitly set to
+    false. Any read error → True (fail-open: don't accidentally
+    disable the plugin because of a config parse failure).
+    """
+    try:
+        import yaml
+        config_path = Path.home() / ".hermes" / "config.yaml"
+        if not config_path.exists():
+            return True
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        node = cfg.get("feishu_interactive_cards") or {}
+        return bool(node.get("enabled", True))
+    except Exception as exc:
+        logger.debug(
+            "[feishu-interactive-cards] _is_enabled read failed, defaulting to enabled: %s",
+            exc,
+        )
+        return True
+
+
 def register(ctx):
     """Register all hooks with the Hermes plugin system.
 
@@ -52,7 +89,17 @@ def _start_card_action_listener():
     Failure modes are silent (logged) — the plugin can still send cards
     even if the listener never connects. Listener is needed only for
     receiving button clicks.
+
+    v0.5 #1: skip startup entirely if `feishu_interactive_cards.enabled`
+    is false. Avoids burning a Feishu WebSocket connection for a
+    plugin that won't process any events.
     """
+    if not _is_enabled():
+        logger.info(
+            "[feishu-interactive-cards] Disabled by config; "
+            "card action listener not started"
+        )
+        return
     try:
         import yaml
         config_path = Path.home() / ".hermes" / "config.yaml"
@@ -101,6 +148,14 @@ def _on_card_button_clicked(payload: Dict[str, Any]) -> None:
     try:
         from .session import EventType
         from .events import build_event
+
+        # v0.5 #1: per-message opt-out. If the plugin is disabled but a
+        # button click from a pre-existing card still arrives, no-op.
+        if not _is_enabled():
+            logger.debug(
+                "[feishu-interactive-cards] Button click ignored (plugin disabled)"
+            )
+            return
 
         open_chat_id = payload.get("context", {}).get("open_chat_id", "")
         action_value = payload.get("action", {}).get("value", {})
@@ -299,6 +354,14 @@ def _on_pre_gateway_dispatch(event=None, **kwargs):
 
     if platform != "feishu":
         # Only Feishu for now
+        return None
+
+    # v0.5 #1: per-message opt-out. Short-circuit send path before
+    # any pipeline is created or any network call is scheduled.
+    if not _is_enabled():
+        logger.debug(
+            "[feishu-interactive-cards] pre_gateway_dispatch ignored (plugin disabled)"
+        )
         return None
 
     user_text = getattr(event, "text", "") if event else ""
@@ -574,7 +637,14 @@ def _edit_card_async(pipeline, chat_id: str, platform: str, final: bool = False)
     """Asynchronously edit the card in place.
 
     Falls back to sending a new card if message_key is missing.
+
+    v0.5 #1: no-op when `feishu_interactive_cards.enabled` is false.
+    This guards the edit path even when called from other internal
+    sites (button click handlers, etc.) so a single config flag
+    silences the whole card pipeline.
     """
+    if not _is_enabled():
+        return
     from .adapter_feishu import render_feishu_card
     from .feishu_sender import get_feishu_client
 
@@ -621,7 +691,14 @@ def _delete_card_async(pipeline, chat_id: str, platform: str):
     marked `withdrawn` so a follow-up turn in the same chat creates a
     new card (v0.4 dedup logic checks `status in (done, error,
     withdrawn)` to decide whether to reuse the old card).
+
+    v0.5 #1: no-op when `feishu_interactive_cards.enabled` is false.
+    Withdrawal is a user action so we don't want to silently swallow
+    clicks — but we also can't honor "撤回" on a card we won't
+    acknowledge. Skipping both sides is the consistent answer.
     """
+    if not _is_enabled():
+        return
     from .feishu_sender import get_feishu_client
 
     client = get_feishu_client()

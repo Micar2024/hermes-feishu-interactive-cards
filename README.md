@@ -4,9 +4,9 @@ Platform-agnostic interactive card rendering for Hermes conversations.
 Hooks into the official Hermes plugin system — **no monkey-patching**,
 **no sidecar**, **no HTTP server** (yet).
 
-> **Status: v0.3 — visible feedback + clickable buttons (working).**
-> See [`CHANGELOG.md`](CHANGELOG.md) for what changed in v0.3 and
-> [`ROADMAP.md`](ROADMAP.md) for what v0.4+ needs.
+> **Status: v0.4.0 (shipped 2026-06-25) + v0.5 #1 (per-message opt-out, in
+> this build).** See [`CHANGELOG.md`](CHANGELOG.md) for the full
+> version history and [`ROADMAP.md`](ROADMAP.md) for v0.5+ plans.
 
 ## ⚠️ Production activation
 
@@ -15,8 +15,18 @@ This plugin is **enabled by default** if you cloned it into
 `~/.hermes/config.yaml` `plugins:` list. That means **every Feishu
 message** gets intercepted.
 
-To disable without removing the files, comment it out of `config.yaml`
-(see `ROADMAP.md` L1 for the long-term opt-out flag).
+To disable without removing the files or commenting out the plugin
+entry, set the per-message opt-out flag in `~/.hermes/config.yaml`
+(v0.5 #1 — see `CHANGELOG.md`):
+
+```yaml
+feishu_interactive_cards:
+  enabled: false
+```
+
+With this flag set, the plugin no-ops on every send/edit/delete path
+AND skips WebSocket listener startup. Feishu sees no card activity
+from this bot. Restart the gateway after toggling the flag.
 
 ## Credentials
 
