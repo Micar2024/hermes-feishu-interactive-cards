@@ -38,6 +38,70 @@ Default remains `true` so existing users see no behavior change.
   different/legacy switch and is NOT consulted by this plugin. A
   comment in `_is_enabled` documents this to avoid future
   confusion.
+
+### v0.5 #3 — plugin reuses Hermes main WebSocket (no second client)
+
+**Root cause (陈平安 confirmed, 2026-06-26)**: the plugin's
+`_start_card_action_listener()` previously built its own
+`lark.ws.Client` (`callback_listener.py:169` source) and registered an
+`EventDispatcherHandler` that only handled
+`p2_card_action_trigger`. This was a SECOND WebSocket connection
+alongside Hermes gateway's own `lark.ws.Client`, both bound to the
+same `app_id`. When both ran simultaneously they competed for event
+routing — gateways random-deliver to one of them, the other side
+silently drops `im.message.receive_v1` and the user sees no response.
+
+**Symptom**: "频繁无响应 / 不响应" — gateway log showed two
+`connected to wss://msg-frontier.feishu.cn/ws/v2` lines per gateway
+restart, and the user periodically received no reply for ≥1 minute
+while traffic routed to the wrong client.
+
+**Fix (陈平安, in this commit series)**:
+
+1. `hermes-agent/gateway/platforms/feishu.py:137` — added
+   `register_plugin_card_action_handler(handler)` registration
+   point on the gateway's existing `LarkClient`. Plugins can now
+   plug their `P2CardActionTrigger` callback into the gateway's
+   main WebSocket instead of opening a second connection.
+2. `plugins/feishu_interactive_cards/plugin.py:86-117` —
+   `_start_card_action_listener` no longer constructs
+   `lark.ws.Client`. It imports
+   `register_plugin_card_action_handler` from
+   `gateway.platforms.feishu` and calls it with a handler that
+   delegates to `_on_card_button_clicked`. WebSocket startup is
+   now redundant — the gateway's existing listener delivers
+   `card.action.trigger` events directly to the registered plugin
+   handlers.
+3. The legacy `callback_listener.py` daemon path remains in the
+   tree but is no longer invoked by `register()`.
+
+**Verification** (gateway.log WS connection count):
+
+| Time window | WS conns | Why |
+|---|---|---|
+| 2026-06-26 08:47–08:53 | 2 | pre-fix + 1st kickstart crash (`unexpected signal`) |
+| 2026-06-26 08:55–09:02 | 2 | pre-fix, gateway restart |
+| 2026-06-26 09:58 → | **1** | post-fix, stable for ≥10 min |
+| 2026-06-26 10:14 | 2 (→ 1) | e2e `test_e2e_real_button_click.py` opened a listener for a real click, then exited; main WS count stayed at 1 the whole time — **the v0.5 #3 fix was unaffected by the test** |
+
+**Real Feishu end-to-end** (`tests/test_e2e_real_button_click.py`,
+run 2026-06-26 10:14): the plugin posted a card
+(`om_x100b6cea46405ca0b32d1ef871b0a57`) with `✅ Approve` /
+`❌ Reject` buttons, the user tapped `✅ Approve` within the 90s
+window, the script confirmed `status_detail = "已选择: approve"`
+and `edit_count = 1`. Full chain
+`飞书 → WS → handler → edit_card → 卡片状态更新` verified.
+
+#### Operational impact
+
+- Feishu DM latency ceiling dropped from "agent think time + 偶尔
+  WS 抢路由导致的 60s+ 黑窗" to "agent think time alone".
+- WS-related warnings in `gateway.log`
+  (`processor not found` for `im.message.message_read_v1` etc.)
+  are unchanged — these are bypass events the bot isn't
+  subscribed to and don't impact delivery.
+- Auth path (v0.4 #3 plist `FEISHU_ALLOW_ALL_USERS=true`) is
+  compatible and continues to gate button clicks.
 - The `plugins.enabled` list still controls framework-level
   registration; `feishu_interactive_cards.enabled` only flips
   runtime behavior once the plugin is loaded.
