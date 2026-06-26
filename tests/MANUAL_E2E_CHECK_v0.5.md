@@ -53,8 +53,8 @@ client. A short test like "ping" is fine.
 | Assertion | Where to check | Expected |
 |---|---|---|
 | No card rendered | Feishu chat on the receiving side | Plain text only, no interactive card UI |
-| Listener not started | gateway stdout/stderr or `~/.hermes/logs/` | One line: `[feishu-interactive-cards] Disabled by config; card action listener not started` |
-| No SDK call | Same logs | **No** line containing `Initial card sent` or `Edit failed` for this message |
+| No plugin network activity | gateway stdout/stderr or `~/.hermes/logs/gateway.log` | **No** line containing `Initial card sent`, `Card sent`, `Edit failed`, or `Card deleted` for any message during the session. The plugin's three send/edit/delete guards short-circuit on `_is_enabled() == False`, so the absence of these lines IS the success signal. |
+| (Optional) Hook layer check | Same logs | Look for `agent:end hook requested skip_text` — if present, the `feishu-card` Hook is still rendering cards via the Feishu SDK and is **NOT** affected by `feishu_interactive_cards.enabled`. To silence the Hook layer separately, see the note at the bottom of this file. |
 
 ### 5. Verify the inverse (sanity)
 
@@ -75,6 +75,30 @@ should reappear as it did in v0.4.0.
   is missing.
 - Anything else → paste the gateway log + the relevant
   `plugin.py` section, debug from there.
+
+## Hook layer is separate
+
+`feishu_interactive_cards.enabled` silences the **plugin layer**
+(`pre_gateway_dispatch` send/edit/delete paths). It does NOT affect
+the **Hook layer** (`~/.hermes/hooks/feishu-card/handler.py`), which
+is a Hermes hook firing on `agent:end` and reads its own
+`feishu.message_card.enabled` flag.
+
+If you want Feishu to deliver plain text only with no cards at all,
+set BOTH flags:
+
+```yaml
+feishu_interactive_cards:
+  enabled: false
+feishu:
+  message_card:
+    enabled: false
+    mode: final_only  # or whatever your config currently has; keep it
+```
+
+The two flags are independent. v0.5 #1 only covers the plugin layer
+by design — touching the Hook layer would expand scope into a
+separate refactor.
 
 ## Cleanup
 
